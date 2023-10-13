@@ -1,0 +1,189 @@
+<HTML>
+    <HEAD>
+        <SCRIPT src="https://cdn.3dverse.com/legacy/sdk/latest/SDK3DVerse.js"></SCRIPT>
+        <SCRIPT src="https://cdn.3dverse.com/legacy/sdk/latest/SDK3DVerse_Gizmos_Ext.js"></SCRIPT>
+        <SCRIPT src="./AppConfig.js"></SCRIPT>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+
+        <SCRIPT>
+            window.addEventListener('load', async () =>
+            {
+                var canvas = document.getElementById('display_canvas');
+
+                const info_entities = [
+                    "615970b2-d6a2-4362-9a83-76391de9d112", //n64
+                    "c46162cd-d1c4-4f7c-aa27-1e586cc0e64d", //DS
+                    "dfa3431a-5ad6-40c7-a060-8d737ebe4e44", //Switch
+                    "6a712c81-57bb-4c0d-8e9e-7903d1b0425e", //GameBoy
+                    "7d592a3c-14c1-42fc-af9a-1f85798d98f0", //Wii
+                ]
+
+                var wii_sound = new Howl({src:"start.wav", volume:0.5})
+
+                const connectionInfo = await SDK3DVerse.webAPI.createOrJoinSession(AppConfig.sceneUUID);
+
+                SDK3DVerse.notifier.on('onLoadingStarted', () => document.getElementById("message").innerHTML = "Connecting...");
+                SDK3DVerse.notifier.on('onLoadingProgress', (status) => document.getElementById("message").innerHTML = status.message);
+                SDK3DVerse.notifier.on('onLoadingEnded', (status) => document.getElementById("message").innerHTML = status.message);
+
+                SDK3DVerse.setViewports(null);
+
+                SDK3DVerse.setupDisplay(canvas);
+                SDK3DVerse.startStreamer(connectionInfo);
+
+                await SDK3DVerse.connectToEditor();
+
+                SDK3DVerse.engineAPI.fireEvent(SDK3DVerse.utils.invalidUUID, "start_simulation");
+
+                //SDK3DVerse.installExtension(SDK3DVerse_Gizmos_Ext);
+                //SDK3DVerse.connectToEditor();
+
+                // spawn the player entity which have its own camera entity & character controller entity
+                const {
+                    playerEntity,
+                    cameraEntity,
+                    characterController
+                } = await SpawnPlayer("9921baa5-86c9-437b-9ff6-f8f280fb04b5");
+
+                window.onbeforeunload = () =>
+                {
+                    SDK3DVerse.engineAPI.deleteEntities([playerEntity]);
+                    return null;
+                };
+
+                await attachScripts(cameraEntity, characterController);
+
+                await SDK3DVerse.setViewports([
+                    {
+                        id : 0,
+                        left : 0, top: 0, width: 1, height: 1,
+                        defaultControllerType : -1,
+                        camera: cameraEntity,
+                        defaultCameraValues: SDK3DVerse.engineAPI.cameraAPI.getDefaultCameraValues(),
+                    }
+                ]);
+
+                canvas.addEventListener(
+                    'mouseup',
+                    async (e) =>
+                    {
+                        var startCheck = false
+                        var {entity} = await SDK3DVerse.engineAPI.castScreenSpaceRay(e.clientX, e.clientY, false, false);
+                        console.log(entity.getName(), entity.getEUID(), info_entities.includes(entity.getEUID()))
+
+                        if (!info_entities.includes(entity.getEUID())) {
+                            var temp_entity
+                            var continue_check = true
+
+                            entity.getAncestors().forEach(parent => {
+                                if (continue_check) {
+                                    console.log(parent.getName(), parent.getEUID(), info_entities.includes(parent.getEUID()))
+                                    if (parent.getName() === "Portraits")
+                                        continue_check = false
+                                    else {
+                                        console.log("hoi")
+                                        if (info_entities.includes(parent.getEUID())) {
+                                            console.log("hey")
+                                            entity = parent
+                                            continue_check = false
+                                            startCheck = true
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
+                            startCheck = true
+                        }
+
+                        console.log(`startCheck is ${startCheck} with ${entity.getName()}. And so, ${startCheck && "we can zoom in" || "we do nothing"}`)
+
+                        if(entity)
+                        {
+                            document.getElementById('selected_entity').innerHTML = `Selected entity : <strong>${entity.getName()}</strong>`;
+                            if (startCheck) {
+                                console.log(SDK3DVerse.engineAPI.cameraAPI.getActiveViewports(), entity.getComponent("local_transform").position)
+                                const viewports = await SDK3DVerse.engineAPI.cameraAPI.getActiveViewports()
+                                const trans = await entity.getGlobalTransform()
+                                wii_sound.play()
+                                await SDK3DVerse.engineAPI.cameraAPI.travel(viewports[0], trans.position, trans.orientation, 4)
+                                //SDK3DVerse.engineAPI.cameraAPI.refresh()
+                            }
+                        }
+                    },
+                    false
+                );
+            });
+
+            async function setupKeyboardLayout(event)
+            {
+                if((event.code === "KeyA" && event.key !== "a") ||
+                (event.code === "KeyQ" && event.key !== "q") ||
+                (event.code === "KeyZ" && event.key !== "z") ||
+                (event.code === "KeyW" && event.key !== "w"))
+                {
+                    SDK3DVerse.actionMap.setFrenchKeyboardBindings();
+                    window.removeEventListener('keydown', setupKeyboardLayout);
+                    await SDK3DVerse.onConnected();
+                    SDK3DVerse.actionMap.propagate();
+                }
+            }
+            window.addEventListener('keydown', setupKeyboardLayout);
+
+            //--------------------------------------------------------------------------------------------------
+            async function SpawnPlayer(characterControllerSceneUUID)
+            {
+                console.log("Prepping up your player's avatar...");
+
+                const playerTemplate  = { debug_name : {value : 'Player'} };
+                SDK3DVerse.utils.resolveComponentDependencies(playerTemplate, 'scene_ref');
+
+                playerTemplate.scene_ref.value  = characterControllerSceneUUID;
+
+                // random start position
+                //const startPositions            = await SDK3DVerse.engineAPI.findEntitiesByNames("Start Position 1", "Start Position 2");
+                //const rnd                       = Math.floor(Math.random() * startPositions.length);
+                //playerTemplate.local_transform  = startPositions[rnd].getComponent('local_transform');
+                playerTemplate.local_transform.position = [-10, 5, 0]
+                console.log(playerTemplate.local_transform)
+
+                const playerEntity              = await SDK3DVerse.engineAPI.spawnEntity(null, playerTemplate);
+                let   children                  = await SDK3DVerse.engineAPI.getEntityChildren(playerEntity);
+                const cameraEntity              = children.find((child) => child.isAttached('camera'));
+                const characterController       = children.find((child) => child.isAttached('character_controller'));
+
+                console.log("Awaiting teleportation accreditation...");
+
+                children = await SDK3DVerse.engineAPI.getEntityChildren(characterController);
+
+                return { playerEntity, cameraEntity, characterController};
+            }
+
+
+            //--------------------------------------------------------------------------------------------------
+            function attachScripts(cameraEntity, characterController)
+            {
+                const cameraScriptUUID          = Object.keys(cameraEntity.getComponent("script_map").elements).pop();
+                const controllerScriptUUID      = Object.keys(characterController.getComponent("script_map").elements).pop();
+
+                SDK3DVerse.engineAPI.attachToScript(characterController, controllerScriptUUID);
+                SDK3DVerse.engineAPI.attachToScript(cameraEntity, cameraScriptUUID);
+
+                console.log("Teleportation accreditation granted, brace yourself...");
+                document.getElementById('display_canvas').focus();
+            }
+        </SCRIPT>
+    </HEAD>
+
+    <style>
+        div {
+            color: aliceblue;
+            font-family: 'Work Sans', sans-serif;
+        }
+    </style>
+
+    <BODY>
+        <DIV id="message">Loading...</DIV>
+        <div id="selected_entity">None</div>
+        <CANVAS tabindex="1" id="display_canvas" width="1280" height="720"></CANVAS>
+    </BODY>
+</HTML>
